@@ -7,6 +7,44 @@
 
 #include "pch.h"
 
+char* readFile(const char* filename) {
+    FILE *file = fopen(filename, "r");
+    if (file == NULL) {
+        Log(LogLevel_Error, "Could not open file %s\n", filename);
+        return NULL;
+    }
+
+    // Seek to the end of the file to get its size
+    fseek(file, 0, SEEK_END);
+    long fileSize = ftell(file);
+    rewind(file);  // Go back to the start of the file
+
+    // Allocate memory for the file content (+1 for the null terminator)
+    char *buffer = (char*)malloc((fileSize + 1) * sizeof(char));
+    if (buffer == NULL) {
+        Log(LogLevel_Error, "Memory allocation failed\n");
+        fclose(file);
+        return NULL;
+    }
+
+    // Read the file into the buffer
+    size_t bytesRead = fread(buffer, sizeof(char), fileSize, file);
+    if (bytesRead != fileSize) {
+        Log(LogLevel_Error, "Error reading file\n");
+        free(buffer);
+        fclose(file);
+        return NULL;
+    }
+
+    // Null-terminate the string
+    buffer[fileSize] = '\0';
+
+    // printf("%s: %s\n", filename, buffer);
+
+    fclose(file);
+    return buffer;
+}
+
 #ifndef _WIN32
 int strcat_s(char *restrict dest, int destsz, const char *restrict src)
 {
@@ -72,25 +110,7 @@ size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *user
 
 int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
 {
-#ifdef _WIN32
-  // Allow AZURE CLI Access token override by environment variable "AZURE_CLI_ACCESS_TOKEN"
-  size_t azureCliAccessTokenSize;
-  getenv_s(&azureCliAccessTokenSize, NULL, 0, "AZURE_CLI_ACCESS_TOKEN");
-  if (azureCliAccessTokenSize != 0)
-  {
-    Log(LogLevel_Info, "Environment variable AZURE_CLI_ACCESS_TOKEN defined [%zu]\n", azureCliAccessTokenSize);
-    accessToken->memory  = (char *)malloc(azureCliAccessTokenSize * sizeof(char));
-    if (!accessToken->memory)
-    {
-      Log(LogLevel_Error, "Environment variable AZURE_CLI_ACCESS_TOKEN defined, but failed to allocate memory for accessToken->memory!\n");
-      return 0;
-    }
 
-    getenv_s(&azureCliAccessTokenSize, accessToken->memory, azureCliAccessTokenSize, "AZURE_CLI_ACCESS_TOKEN");
-    accessToken->size = azureCliAccessTokenSize;
-    return 1;
-  }
-#else
   char *azureCliToken = getenv("AZURE_CLI_ACCESS_TOKEN");
   size_t azureCliAccessTokenSize;
   if (azureCliToken)
@@ -109,7 +129,6 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
     accessToken->size = azureCliAccessTokenSize + 1;
     return 1;
   }
-#endif
 
 
   CURL *curl_handle;
@@ -121,46 +140,32 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
   char *IDMSEnv = NULL;
   size_t requiredSize;
 
-#ifdef _WIN32
-  getenv_s(&requiredSize, NULL, 0, "IDENTITY_ENDPOINT");
-  if (requiredSize != 0)
-  {
-    Log(LogLevel_Error, "IDENTITY_ENDPOINT defined [%zu]\n", requiredSize);
-    IDMSEnv = (char *)malloc(requiredSize * sizeof(char));
-    if (!IDMSEnv)
-    {
-      Log(LogLevel_Error, "Failed to allocate memory!\n");
-      return 0;
-    }
-
-    getenv_s(&requiredSize, IDMSEnv, requiredSize, "IDENTITY_ENDPOINT");
-  }
-#else
   IDMSEnv = getenv("IDENTITY_ENDPOINT");
-#endif
 
   char idmsUrl[4 * 1024] = {0};
   if (IDMSEnv)
   {
     Log(LogLevel_Info, "Use overrided IDMS url : %s\n", IDMSEnv);
     strcat_s(idmsUrl, sizeof idmsUrl, IDMSEnv);
-    strcat_s(idmsUrl, sizeof idmsUrl, "?api-version=2018-02-01");
-#ifdef _WIN32
-    free(IDMSEnv);
-#endif
   }
   else
   {
-    strcat_s(idmsUrl, sizeof idmsUrl, "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01");
+    char *TenantId = NULL;
+    TenantId = getenv("AZURE_TENANT_ID");
+
+    strcat_s(idmsUrl, sizeof idmsUrl, "https://login.microsoftonline.com/");
+    strcat_s(idmsUrl, sizeof idmsUrl, TenantId);
+    strcat_s(idmsUrl, sizeof idmsUrl, "/oauth2/v2.0/token");
   }
 
+  char postBody[4 * 1024] = {0};
   if (strcasecmp(type, "vault") == 0)
   {
-    strcat_s(idmsUrl, sizeof idmsUrl, "&resource=https://vault.azure.net");
+    strcat_s(postBody, sizeof postBody, "scope=https%3A%2F%2Fvault.azure.net%2F.default");
   }
   else if (strcasecmp(type, "managedHsm") == 0)
   {
-    strcat_s(idmsUrl, sizeof idmsUrl, "&resource=https://managedhsm.azure.net");
+    strcat_s(postBody, sizeof postBody, "scope=https%3A%2F%2Fmanagedhsm.azure.net%2F.default");
   }
   else
   {
@@ -168,19 +173,39 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
     return 0;
   }
 
+  char *ClientId = NULL;
+  ClientId = getenv("AZURE_CLIENT_ID");
+
+  strcat_s(postBody, sizeof postBody, "&client_id=");
+  strcat_s(postBody, sizeof postBody, ClientId);
+  strcat_s(postBody, sizeof postBody, "&client_assertion_type=urn%3Aietf%3Aparams%3Aoauth%3Aclient-assertion-type%3Ajwt-bearer");
+
+  char* access_token = readFile(getenv("AZURE_FEDERATED_TOKEN_FILE"));
+  strcat_s(postBody, sizeof postBody, "&client_assertion=");
+  strcat_s(postBody, sizeof postBody, access_token);
+  free(access_token);
+
+  strcat_s(postBody, sizeof postBody, "&grant_type=client_credentials");
+
+  // printf("idmsUrl: %s\n", idmsUrl);
+  // printf("postBody: %s\n", postBody);
+
   curl_handle = curl_easy_init();
   curl_easy_setopt(curl_handle, CURLOPT_URL, idmsUrl);
   struct curl_slist *headers = NULL;
-  headers = curl_slist_append(headers, "Content-Type: application/json");
-  headers = curl_slist_append(headers, "Metadata: true");
+  headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+  // headers = curl_slist_append(headers, "Metadata: true");
   curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
 
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
   curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)accessToken);
   curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
+  curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, postBody);
 
   res = curl_easy_perform(curl_handle);
   curl_easy_cleanup(curl_handle);
+
+  // printf("accessToken: \n", accessToken->memory);
 
   if (res != CURLE_OK)
   {

@@ -39,8 +39,6 @@ char* readFile(const char* filename) {
     // Null-terminate the string
     buffer[fileSize] = '\0';
 
-    // printf("%s: %s\n", filename, buffer);
-
     fclose(file);
     return buffer;
 }
@@ -225,14 +223,10 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
 
   strcat_s(postBody, sizeof postBody, "&grant_type=client_credentials");
 
-  // printf("idmsUrl: %s\n", idmsUrl);
-  // printf("postBody: %s\n", postBody);
-
   curl_handle = curl_easy_init();
   curl_easy_setopt(curl_handle, CURLOPT_URL, idmsUrl);
   struct curl_slist *headers = NULL;
   headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
-  // headers = curl_slist_append(headers, "Metadata: true");
   curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
 
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
@@ -242,8 +236,6 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
 
   res = curl_easy_perform(curl_handle);
   curl_easy_cleanup(curl_handle);
-
-  // printf("accessToken: \n", accessToken->memory);
 
   if (res != CURLE_OK)
   {

@@ -110,7 +110,25 @@ size_t WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *user
 
 int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
 {
+#ifdef _WIN32
+  // Allow AZURE CLI Access token override by environment variable "AZURE_CLI_ACCESS_TOKEN"
+  size_t azureCliAccessTokenSize;
+  getenv_s(&azureCliAccessTokenSize, NULL, 0, "AZURE_CLI_ACCESS_TOKEN");
+  if (azureCliAccessTokenSize != 0)
+  {
+    Log(LogLevel_Info, "Environment variable AZURE_CLI_ACCESS_TOKEN defined [%zu]\n", azureCliAccessTokenSize);
+    accessToken->memory  = (char *)malloc(azureCliAccessTokenSize * sizeof(char));
+    if (!accessToken->memory)
+    {
+      Log(LogLevel_Error, "Environment variable AZURE_CLI_ACCESS_TOKEN defined, but failed to allocate memory for accessToken->memory!\n");
+      return 0;
+    }
 
+    getenv_s(&azureCliAccessTokenSize, accessToken->memory, azureCliAccessTokenSize, "AZURE_CLI_ACCESS_TOKEN");
+    accessToken->size = azureCliAccessTokenSize;
+    return 1;
+  }
+#else
   char *azureCliToken = getenv("AZURE_CLI_ACCESS_TOKEN");
   size_t azureCliAccessTokenSize;
   if (azureCliToken)
@@ -129,6 +147,7 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
     accessToken->size = azureCliAccessTokenSize + 1;
     return 1;
   }
+#endif
 
 
   CURL *curl_handle;
@@ -140,13 +159,32 @@ int GetAccessTokenFromIMDS(const char *type, MemoryStruct *accessToken)
   char *IDMSEnv = NULL;
   size_t requiredSize;
 
+#ifdef _WIN32
+  getenv_s(&requiredSize, NULL, 0, "IDENTITY_ENDPOINT");
+  if (requiredSize != 0)
+  {
+    Log(LogLevel_Error, "IDENTITY_ENDPOINT defined [%zu]\n", requiredSize);
+    IDMSEnv = (char *)malloc(requiredSize * sizeof(char));
+    if (!IDMSEnv)
+    {
+      Log(LogLevel_Error, "Failed to allocate memory!\n");
+      return 0;
+    }
+
+    getenv_s(&requiredSize, IDMSEnv, requiredSize, "IDENTITY_ENDPOINT");
+  }
+#else
   IDMSEnv = getenv("IDENTITY_ENDPOINT");
+#endif
 
   char idmsUrl[4 * 1024] = {0};
   if (IDMSEnv)
   {
     Log(LogLevel_Info, "Use overrided IDMS url : %s\n", IDMSEnv);
     strcat_s(idmsUrl, sizeof idmsUrl, IDMSEnv);
+#ifdef _WIN32
+    free(IDMSEnv);
+#endif
   }
   else
   {
